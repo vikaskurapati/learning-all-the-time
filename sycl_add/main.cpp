@@ -1,4 +1,4 @@
-#include <sycl/sycl.hpp>
+e#include <sycl/sycl.hpp>
 #include <iostream>
 using namespace sycl;
 
@@ -15,19 +15,14 @@ int main(){
   for(std::size_t i; i < VECTOR_SIZE; i++){
     A[i] = 1;
     B[i] = 2;
-    C[i] = 3;
   }
 
-  std::cout << result << "\n";
-  queue q;
-  char* result = malloc_shared<char> (sz, q);
-  std::memcpy(result, secret.data(), sz);
 
-  q.parallel_for(sz, [=](auto& i){
-      result[i] -= 1;
-  }).wait();
-
-  std::cout << result << "\n";
-  free(result, q);
+  for(std::size_t; i < VECTOR_SIZE; i++){
+    if(C[i]!=3){
+      std::error << "C value not matching" << std::endl;
+    }
+  }
+  
   return 0;
 }
