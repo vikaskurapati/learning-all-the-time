@@ -43,9 +43,10 @@ int main(){
   q.wait();
 
   q.submit([&](handler &h){
-    size_t num_groups = (VECTOR_SIZE + 1023) / 1024;
-		  h.parallel_for(range{num_groups, 1024}, [=](id<2> i){
-        size_t idx = i[0] * 1024 + i[1];
+    size_t work_per_group = 2048;
+    size_t num_groups = (VECTOR_SIZE + work_per_group - 1) / work_per_group;
+		  h.parallel_for(range{num_groups, work_per_group}, [=](id<2> i){
+        size_t idx = i[0] * work_per_group + i[1];
         if(idx < VECTOR_SIZE)
         {cDevice[idx] = aDevice[idx] + bDevice[idx];}});
 		  });
