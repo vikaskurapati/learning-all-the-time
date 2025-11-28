@@ -1,0 +1,9 @@
+1. cpu version takes ~ 170ms
+2. accessor version takes ~ 690ms
+3. USM with parallel_for with range takes ~ 352ms
+4. 2D work distribution also gives me only 616 ms
+5. sub group size of pvc?
+6. sub group implementation ~ 370 ms
+7. single group implementation ~ 343.556ms
+8. ./sycl_add_exrange ~ 420 ms still slower than cpu code
+9. 

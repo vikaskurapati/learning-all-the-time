@@ -8,6 +8,25 @@ using namespace sycl;
 
 #define VECTOR_SIZE 100000000
 
+auto handle_async_error = [](exception_list elist){
+    for(auto &e: elist){
+        try{
+            std::rethrow_exception(e);
+        } catch(sycl::exception& e){
+            std::cout << "Caught SYCL ASYNC exception!!\n";
+        }catch(...){
+            std::cout << "Caught non SYCL ASYNC exception!!\n";
+        }
+    }
+    std::terminate();
+};
+
+void say_device(const queue& Q){
+    std::cout << "Device: " << Q.get_device().get_info<info::device::name>() << "\n";
+}
+
+class something_went_wrong {}; //Example exception type
+
 int main(){
 
 	using std::chrono::high_resolution_clock;
@@ -25,9 +44,9 @@ int main(){
   auto t1 = high_resolution_clock::now();
   // time measurement in this scope
   {
-  queue q{};
+  queue q{gpu_selector_v, handle_async_error};
   
-  std::cout << "Selected device: "<< q.get_device().get_info<info::device::name>()<< "\n";
+    say_device(q);
  
   int *aDevice = malloc_device<int>(VECTOR_SIZE, q);
   int *bDevice = malloc_device<int>(VECTOR_SIZE, q);
@@ -71,9 +90,7 @@ int main(){
 	std::cout << i << " : " << C[i]<<std::endl;
       throw std::runtime_error ("C value not matching in code");
     }
-  } 
-
-  //std::cout << "Selected device: "<< q.get_device().get_info<info::device::name>()<< "\n";
+  }
   
   return 0;
 }

@@ -77,7 +77,7 @@ int main(){
   for(std::size_t i=0; i < VECTOR_SIZE; i++){
     if(C[i]!=3){
 	std::cout << i << " : " << C[i]<<std::endl;
-      throw std::runtime_error ("C value not matching in CPU code");
+      throw std::runtime_error ("C value not matching in code");
     }
   } 
 

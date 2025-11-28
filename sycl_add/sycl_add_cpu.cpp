@@ -34,9 +34,7 @@ int main(){
     if(C_cpu[i]!=3){
       throw std::runtime_error ("C value not matching in CPU code");
     }
-  } 
-
-  //std::cout << "Selected device: "<< q.get_device().get_info<info::device::name>()<< "\n";
+  }
   
   return 0;
 }
