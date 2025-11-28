@@ -49,12 +49,17 @@ int main(){
     
     range global{global_size};
     range local{local_size};
-		  h.parallel_for(nd_range{global, local}, [=](nd_item<1> i){
-        size_t idx = i.get_global_id(0);
-        if(idx < VECTOR_SIZE)
-        {cDevice[idx] = aDevice[idx] + bDevice[idx];}});
+		//   h.parallel_for(nd_range{global, local}, [=](nd_item<1> i){
+        // size_t idx = i.get_global_id(0);
+        // if(idx < VECTOR_SIZE)
+        // {cDevice[idx] = aDevice[idx] + bDevice[idx];}});
+
+        h.parallel_for(range<1>{VECTOR_SIZE}, [=](id<1> idx){
+            cDevice[idx] = aDevice[idx] + bDevice[idx];
+        });
 		  });
-  q.wait();
+
+          q.wait();
   // write kernel code here
   
   q.submit([&](handler &h){
