@@ -42,7 +42,7 @@ int main(){
   q.wait();
 
   q.submit([&](handler &h){
-		  h.parallel_for(VECTOR_SIZE, [=](id<1> i){cDevice[i] = aDevice[i] + bDevice[i];});
+		  h.parallel_for(range{VECTOR_SIZE}, [=](id<1> i){cDevice[i] = aDevice[i] + bDevice[i];});
 		  });
   q.wait();
   // write kernel code here
