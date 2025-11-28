@@ -33,31 +33,17 @@ int main(){
   int *bDevice = malloc_device<int>(VECTOR_SIZE, q);
   int *cDevice = malloc_device<int>(VECTOR_SIZE, q);
 
-  q.submit([&](handler &h){
-		  h.memcpy(aDevice, &A, VECTOR_SIZE*sizeof(int));
-		 });
-  q.submit([&](handler &h){
-		  h.memcpy(bDevice, &B, VECTOR_SIZE*sizeof(int));
-		  });
-
+  q.memcpy(aDevice, A.data(), VECTOR_SIZE*sizeof(int));
+  q.memcpy(bDevice, B.data(), VECTOR_SIZE*sizeof(int));
   q.wait();
 
-  q.submit([&](handler &h){
-    size_t work_per_group = 2048;
-    size_t num_groups = (VECTOR_SIZE + work_per_group - 1) / work_per_group;
-		  h.parallel_for(range{num_groups, work_per_group}, [=](id<2> i){
-        size_t idx = i[0] * work_per_group + i[1];
-        if(idx < VECTOR_SIZE)
-        {cDevice[idx] = aDevice[idx] + bDevice[idx];}});
-		  });
+
+  q.parallel_for(range<1>{VECTOR_SIZE}, [=](id<1> i){
+        cDevice[i] = aDevice[i] + bDevice[i];});
+
   q.wait();
-  // write kernel code here
   
-  q.submit([&](handler &h){
-		  //copy back to host
-		  h.memcpy(&C[0], cDevice, VECTOR_SIZE*sizeof(int));
-		  });
-  q.wait();
+  q.memcpy(&C[0], cDevice, VECTOR_SIZE*sizeof(int));
 
   }
   auto t2 = high_resolution_clock::now();
