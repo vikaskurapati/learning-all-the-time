@@ -26,6 +26,8 @@ int main(){
   {
   queue q{};
   
+  range<1> num_items{VECTOR_SIZE};
+
   buffer<int> ABuf(&A[0], VECTOR_SIZE);
   buffer<int> BBuf(&B[0], VECTOR_SIZE);
   buffer<int> CBuf(&C[0], VECTOR_SIZE);
@@ -37,9 +39,9 @@ int main(){
 		  //create device accessors
 		  accessor aA(ABuf, h, read_only);
 		  accessor aB(BBuf, h, read_only);
-		  accessor aC(CBuf, h);
+		  accessor aC(CBuf, h, write_only, no_init);
 		  
-		  h.parallel_for(VECTOR_SIZE, [=](auto i){aC[i] = aB[i] + aA[i]; });
+		  h.parallel_for(num_items, [=](auto i){aC[i] = aB[i] + aA[i]; });
 		  });
   
   q.wait();
