@@ -44,11 +44,14 @@ int main(){
 
   q.submit([&](handler &h){
       
-      range global{VECTOR_SIZE};
-      range local{1024};
+    size_t local_size = 1024;
+    size_t global_size = ((VECTOR_SIZE + local_size - 1) / local_size) * local_size;
+    
+    range global{global_size};
+    range local{local_size};
 		  h.parallel_for(nd_range{global, local}, [=](nd_item<1> i){
         size_t idx = i.get_global_id(0);
-        // if(idx < VECTOR_SIZE)
+        if(idx < VECTOR_SIZE)
         {cDevice[idx] = aDevice[idx] + bDevice[idx];}});
 		  });
   q.wait();
