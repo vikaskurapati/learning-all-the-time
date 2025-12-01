@@ -63,7 +63,7 @@ int main(){
 
   q.submit([&](handler &h){
     size_t N = VECTOR_SIZE;
-    size_t W = 1024;
+    size_t W = 16;
     h.parallel_for(range{W}, [=](item<1> it){
         for(int i = it.get_id()[0]; i < N; i+= it.get_range()[0]){
             cDevice[i] = aDevice[i] + bDevice[i];
