@@ -36,6 +36,26 @@ int main(){
 
   auto t2 = high_resolution_clock::now();
 
+    auto kid = get_kernel_id<class Reduce>();
+  auto kb = get_kernel_bundle<bundle_state::executable>(
+q.get_context(), {q.get_device()}, {kid});
+auto kernel = kb.get_kernel(kid);
+std::cout
+<< "The maximum work-group size for the kernel and "
+"this device is: "
+<< kernel.get_info<info::kernel_device_specific::
+work_group_size>(
+q.get_device())
+<< "\n";
+std::cout
+<< "The preferred work-group size multiple for the "
+"kernel and this device is: "
+<< kernel.get_info<
+info::kernel_device_specific::
+preferred_work_group_size_multiple>(
+q.get_device())
+<< "\n";
+
   duration<double, std::milli> ms_double = t2-t1;
   std::cout << "gpu code took " << ms_double.count()<<"ms\n";
 
