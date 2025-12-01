@@ -42,7 +42,7 @@ int main(){
   q.submit([&](handler &h){
     size_t work_per_group = 2048;
     size_t num_groups = (VECTOR_SIZE + work_per_group - 1) / work_per_group;
-		  h.parallel_for(range{num_groups, work_per_group}, [=](id<2> i){
+		  h.parallel_for<class Add>(range{num_groups, work_per_group}, [=](id<2> i){
         size_t idx = i[0] * work_per_group + i[1];
         if(idx < VECTOR_SIZE)
         {C[idx] = A[idx] + B[idx];}});
@@ -59,14 +59,34 @@ int main(){
   for(std::size_t i=0; i < VECTOR_SIZE; i++){
     if(C[i]!=3){
 	std::cout << i << " : " << C[i]<<std::endl;
-      throw std::runtime_error ("C value not matching in CPU code");
+      throw std::runtime_error ("C value not matching in GPU code");
     }
   }
+
+  auto kid = get_kernel_id<class Add>();
+  auto kb = get_kernel_bundle<bundle_state::executable>(
+q.get_context(), {q.get_device()}, {kid});
+auto kernel = kb.get_kernel(kid);
+std::cout
+<< "The maximum work-group size for the kernel and "
+"this device is: "
+<< kernel.get_info<info::kernel_device_specific::
+work_group_size>(
+q.get_device())
+<< "\n";
+std::cout
+<< "The preferred work-group size multiple for the "
+"kernel and this device is: "
+<< kernel.get_info<
+info::kernel_device_specific::
+preferred_work_group_size_multiple>(
+q.get_device())
+<< "\n";
 
   free(A, q.get_context());
     free(B, q);
   alloc.deallocate(C, VECTOR_SIZE);
-  
+
   //std::cout << "Selected device: "<< q.get_device().get_info<info::device::name>()<< "\n";
   
   return 0;
