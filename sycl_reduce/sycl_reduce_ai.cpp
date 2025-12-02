@@ -63,12 +63,22 @@ int main(){
             local_mem[local_id] = thread_sum;
             item.barrier(access::fence_space::local_space);
 
-            for(size_t stride = WORK_GROUP_SIZE / 2; stride > 0; stride >>= 1){
-                if(local_id < stride){
-                    local_mem[local_id] += local_mem[local_id + stride];
+            // 2. Tree Reduction in Shared Memory
+            // FIX: Removed the unsafe SUBGROUP optimization. 
+            // We reduce all the way to 0 to avoid divergence and logic errors.
+            // for(size_t stride = WORK_GROUP_SIZE / 2; stride > 0; stride >>= 1){
+            //     if(local_id < stride){
+            //         local_mem[local_id] += local_mem[local_id + stride];
+            //     }
+            //     item.barrier(access::fence_space::local_space);
+            // }
+
+            if(local_id == 0){
+                for(size_t i = 1; i < WORK_GROUP_SIZE; i++){
+                    local_mem[0] += local_mem[i];
                 }
-                item.barrier(access::fence_space::local_space);
             }
+            item.barrier();
 
             // 3. Write Partial Sum
             if(local_id == 0){
