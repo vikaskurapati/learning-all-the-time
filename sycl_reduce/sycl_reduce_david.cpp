@@ -119,8 +119,11 @@ void run_benchmark(size_t VECTOR_SIZE, queue& q) {
         run_times.push_back(ms_double.count());
     }
     
-    double total_time = std::accumulate(run_times.begin(), run_times.end(), 0.0) / NUM_ITERATIONS;
-    std::cout << total_time;
+    double total_time = std::accumulate(run_times.begin()+1, run_times.end(), 0.0) / (NUM_ITERATIONS - 1);
+    std::cout << run_times[0] << std::endl;
+    std::cout << 1e-6*VECTOR_SIZE*sizeof(T)/run_times[0] << std::endl;
+    std::cout << total_time << std::endl;
+    std::cout << 1e-6*VECTOR_SIZE*sizeof(T)/total_time << std::endl;
 
     // Validation
     T expected = static_cast<T>(VECTOR_SIZE);
