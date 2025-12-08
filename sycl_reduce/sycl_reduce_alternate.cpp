@@ -12,7 +12,7 @@ using namespace sycl;
 template<typename T>
 void run_benchmark(size_t VECTOR_SIZE, size_t WORK_GROUP_SIZE, size_t ITEMS_PER_WORK_ITEM, queue& q) {
     
-    T *A = malloc_shared<T>(VECTOR_SIZE, q);
+    T *A = malloc_device<T>(VECTOR_SIZE, q);
     T sum = 0;
 
     // Initialize array
@@ -21,7 +21,6 @@ void run_benchmark(size_t VECTOR_SIZE, size_t WORK_GROUP_SIZE, size_t ITEMS_PER_
     size_t num_work_groups = (VECTOR_SIZE + (WORK_GROUP_SIZE * ITEMS_PER_WORK_ITEM) - 1)
                              / (WORK_GROUP_SIZE * ITEMS_PER_WORK_ITEM);
 
-    T* partial_sums = malloc_device<T>(num_work_groups, q);
 
     std::vector<double> run_times;
     const int NUM_ITERATIONS = 10;
@@ -31,11 +30,12 @@ void run_benchmark(size_t VECTOR_SIZE, size_t WORK_GROUP_SIZE, size_t ITEMS_PER_
         using std::chrono::high_resolution_clock;
         using std::chrono::duration;
         
+        T* result = malloc_device<T>(1, q);
+        
         auto t1 = high_resolution_clock::now();
 
         sum = 0;
 
-        T* result = malloc_device<T>(1, q);
         q.memset(result, 0, sizeof(T));
         q.submit([&](handler &h){
             auto local_mem = local_accessor<T, 1>(WORK_GROUP_SIZE, h);
@@ -73,21 +73,25 @@ void run_benchmark(size_t VECTOR_SIZE, size_t WORK_GROUP_SIZE, size_t ITEMS_PER_
 
         q.wait();
 
+        auto t2 = high_resolution_clock::now();
+
         q.memcpy(&sum, result, sizeof(T)).wait();
 
-        auto t2 = high_resolution_clock::now();
 
         duration<double, std::milli> ms_double = t2 - t1;
         run_times.push_back(ms_double.count());
         sycl::free(result, q);
     }
     
-    double total_time = std::accumulate(run_times.begin(), run_times.end(), 0.0)/NUM_ITERATIONS;
-    std::cout << total_time;
+    double total_time = std::accumulate(run_times.begin()+1, run_times.end(), 0.0)/((NUM_ITERATIONS - 1));
+    std::cout << run_times[0] << std::endl;
+    std::cout << 1e-6*VECTOR_SIZE*sizeof(T)/run_times[0] << std::endl;
+    std::cout << total_time << std::endl;
+    std::cout << 1e-6*VECTOR_SIZE*sizeof(T)/total_time << std::endl;
+
 
     // Cleanup resources
     sycl::free(A, q);
-    sycl::free(partial_sums, q);
 
     // Validation
     T expected = static_cast<T>(VECTOR_SIZE);
