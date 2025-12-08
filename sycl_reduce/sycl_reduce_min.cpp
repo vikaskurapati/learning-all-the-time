@@ -118,7 +118,7 @@ void run_benchmark(size_t VECTOR_SIZE, size_t WORK_GROUP_SIZE, size_t ITEMS_PER_
     sycl::free(A, q);
 
     // Validation
-    T expected = static_cast<T>(VECTOR_SIZE);
+    T expected = static_cast<T>(0);
     if(std::fabs(static_cast<double>(sum - expected)) > 1e-3){
         throw std::runtime_error("Reduction incorrect");
     }
