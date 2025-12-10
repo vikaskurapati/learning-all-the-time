@@ -45,7 +45,7 @@ namespace device{
 
 	template <typename T>
 	struct Min{
-		static constexpr T defaultValue = std::numeric_limits<T>:max();
+		static constexpr T defaultValue = std::numeric_limits<T>::max();
 		__device__ T operator()(T a, T b) const {return (a<b)?a:b;}
 	};
 }
@@ -159,7 +159,7 @@ void run_benchmark(size_t vector_size, std::string type_name){
 	cudaStreamCreate(&stream);
 
 	auto t_warm_start = std::chrono::high_resolution_clock::now();
-	Algorithms::reduceVector(d_result, d_data, true, vector_size, ReductionType::Sum, stream);
+	Algorithms::reduceVector(d_result, d_data, true, vector_size, ReductionType::Add, stream);
 	cudaStreamSynchronize(stream);
 	auto t_warm_end = std::chrono::high_resolution_clock::now();
 	std::chrono::duration<double, std::milli> warm_ms = t_warm_end - t_warm_start;
@@ -183,10 +183,10 @@ void run_benchmark(size_t vector_size, std::string type_name){
         // effectively resetting it, which is fine for bandwidth testing.
         Algorithms::reduceVector(d_result, d_data, true, vector_size, ReductionType::Add, stream);
 		
-		cudaStreamSynchronize(stream);
+	//	cudaStreamSynchronize(stream);
 	}
 
-	// cudaStreamSynchronize(stream); // Wait for all 10 kernels to finish
+	cudaStreamSynchronize(stream); // Wait for all 10 kernels to finish
 
     auto t_end = std::chrono::high_resolution_clock::now();
 
@@ -217,9 +217,9 @@ void run_benchmark(size_t vector_size, std::string type_name){
 	free(h_data);
 }
 
-int main(){
+int main(int argc, char* argv[]){
 
-	if(argc != 5){
+	if(argc != 3){
         std::cerr << "Usage: " << argv[0] << " <vector_size> <work_group_size> <items_per_work_item> <type>\n";
         std::cerr << "Types: int, float, double, long\n";
         return 1;
