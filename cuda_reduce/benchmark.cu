@@ -7,13 +7,13 @@
 #include <cassert>
 #include <cuda_runtime.h>
 
-#define CHECK_ERR {
-	 auto err = cudaGetLastError(); 
-	 if(err != cudaSuccess) { 
-		printf("CUDA Error: %s\n", cudaGetErrorString(err)); 
-		exit(1); 
-	} 
-}
+#define CHECK_ERR do { \
+	 auto err = cudaGetLastError(); \
+	 if(err != cudaSuccess) { \
+		printf("CUDA Error: %s\n", cudaGetErrorString(err)); \
+		exit(1); \
+	} \
+} while(0)
 
 template<typename T>
 __device__ __forceinline__ T ntload(const T* ptr){
@@ -51,6 +51,7 @@ namespace device{
 }
 
 enum class ReductionType{Add, Max, Min};
+
 namespace internals{using DeviceStreamT = cudaStream_t;}
 template<typename AccT, typename VecT, typename OperationT>
 __launch_bounds__(1024)
@@ -243,6 +244,6 @@ int main(){
         std::cerr << "Error: " << e.what() << "\n";
         return 1;
     }
-	
+
 	return 0;
 }
