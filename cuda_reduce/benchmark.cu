@@ -228,8 +228,7 @@ int main(int argc, char* argv[]){
     size_t VECTOR_SIZE = std::atol(argv[1]);
     std::string type = argv[2];
 
-	try {
-        if(type == "int") {
+	try {        if(type == "int") {
             run_benchmark<int>(VECTOR_SIZE, type);
         } else if(type == "float") {
             run_benchmark<float>(VECTOR_SIZE, type);
