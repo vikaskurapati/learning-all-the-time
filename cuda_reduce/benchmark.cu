@@ -57,7 +57,7 @@ template<typename AccT, typename VecT, typename OperationT>
 __launch_bounds__(1024)
 void __global__ kernel_reduce(AccT* result, const VecT* vector, size_t size, bool overrideResult, OperationT operation){
 	__shared__ AccT shmem[256]; // Assuming max block size 1024 / warp 32 = 32 warps. 256 is some safe number?
-	const int warpSize = 322;
+	const int warpSize = 32;
 	const auto warpCount = blockDim.x / warpSize;
 	const auto currentWarp = threadIdx.x / warpSize;
 	const auto threadInWarp = threadIdx.x % warpSize;
