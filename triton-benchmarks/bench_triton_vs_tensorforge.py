@@ -59,15 +59,44 @@ except ImportError:
     print("WARNING: tensorforge not found. TensorForge benchmarks will be skipped.")
 
 # ─── DG test cases ───────────────────────────────────────────────────────────
+# Sizes are taken directly from a real SeisSol order-6 elastic build
+# (build.order6.f8.single/src/generated_code/equation-elastic-6-single-f8/tensor.h).
+#
+# Three kernel families dominate:
+#
+#  1. Volume / ADER time integration:  C[dof, 9] += K[dof, dof] * Q[dof, 9]
+#     K is the stiffness matrix (56×56); Q is the solution (56×9, 9 = elastic vars).
+#     Shape pattern: (M=dof, N=9, K=dof). Most common kernel, highest arithmetic intensity.
+#
+#  2. Flux / face projection:  C[dof, 21] += P[dof, face_dof] * F[face_dof, 21]
+#     P[56,21] projects from face basis (21 = ord5 face dof) into volume basis.
+#     Shape pattern: (M=dof, N=21, K=face_dof).
+#
+#  3. ADER CK sub-steps:  dQ[dof_sub, 9] += E[dof_sub, dof] * Q[dof, 9]
+#     dof_sub grows each sub-step: 1,4,10,20,35,56 (triangular numbers).
+#     At full order the shape is the same as family 1, but intermediate steps
+#     have very small M (e.g. 1×9×56, 4×9×56 ...).  We include a few.
+#
+# face_dof for order O = (O+1)(O+2)/2:  ord2→6, ord3→10, ord4→15, ord5→21, ord6→28, ord7→36
+
 DG_SIZES = [
-    ("ord2  (10×10×10)", 10,  10,  10),
-    ("ord3  (20×9×9)  ", 20,   9,   9),
-    ("ord4  (35×20×20)", 35,  20,  20),
-    ("ord5a (56×9×9)  ", 56,   9,   9),
-    ("ord5b (56×18×18)", 56,  18,  18),
-    ("ord5c (56×56×56)", 56,  56,  56),
-    ("ord6  (84×56×56)", 84,  56,  56),
-    ("ord7 (120×84×84)", 120, 84,  84),
+    # ── Family 1: volume / time-integration  C[dof,9] += K[dof,dof] * Q[dof,9]
+    ("vol ord2  (10×9×10) ", 10,   9,  10),
+    ("vol ord3  (20×9×20) ", 20,   9,  20),
+    ("vol ord4  (35×9×35) ", 35,   9,  35),
+    ("vol ord5  (56×9×56) ", 56,   9,  56),
+    ("vol ord6  (84×9×84) ", 84,   9,  84),
+    ("vol ord7 (120×9×120)", 120,  9, 120),
+    # ── Family 2: flux / face projection  C[dof,face_dof] += P * F
+    ("flux ord5  (56×21×21)", 56,  21,  21),
+    ("flux ord6  (84×28×28)", 84,  28,  28),
+    ("flux ord7 (120×36×36)", 120, 36,  36),
+    # ── Family 3: ADER CK full-order step  C[dof,9] += E[dof,dof] * dQ[dof,9]
+    # Same shape as family 1 at the top order — included to show ADER cost.
+    # Square sub-steps (dof×dof×dof) only occur in the Cauchy-Kovalevski
+    # intermediate derivatives, not in the dominant volume integration.
+    ("ader ord5  (56×56×56)", 56,  56,  56),
+    ("ader ord6  (84×84×84)", 84,  84,  84),
 ]
 
 # Use alpha=1.0 so TensorForge generates working code.
