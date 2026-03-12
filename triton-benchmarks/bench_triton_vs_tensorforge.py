@@ -174,13 +174,29 @@ def supports_fp64_tcdot():
 
 
 def max_block_dim():
-    """Cap per-dimension Triton block to stay within shared-memory limit.
+    """Cap per-dimension Triton block.
 
-    2 pipeline stages × (BM×BK + BK×BN) × 8 bytes ≤ shared_mem_bytes
-    sm_75 (64 KB): cap at 32 → 2*(32²+32²)*8 = 32 KB ✓  (fp64 worst case)
-    sm_80+ (228 KB): cap at 256
+    sm_75 (64 KB): cap at 32 → fits 2 stages of 32×32 fp64 tiles
+    sm_80+ (228 KB): cap at 128 — 256 would require >228KB even at 1 stage for
+                     some shapes (e.g. 128×128 fp64 = 128KB; safe at 128).
     """
-    return 32 if torch.cuda.get_device_properties(0).major < 8 else 256
+    return 32 if torch.cuda.get_device_properties(0).major < 8 else 128
+
+
+def _shmem_limit_bytes():
+    """Return the per-block shared-memory limit (bytes) Triton can use."""
+    p = torch.cuda.get_device_properties(0)
+    # Use shared_memory_per_block_optin when available (Triton opts in to max)
+    return getattr(p, 'shared_memory_per_block_optin',
+                   getattr(p, 'shared_memory_per_block', 49152))
+
+
+def _safe_num_stages(BM, BN, BK, dtype):
+    """Max software-pipeline stages that fit in GPU shared memory."""
+    elem_bytes = 8 if dtype == 'fp64' else 4
+    shmem_per_stage = (BM * BK + BK * BN) * elem_bytes
+    limit = _shmem_limit_bytes()
+    return max(1, min(4, limit // shmem_per_stage))
 
 
 def cuda_time(fn, warmup, repeats):
@@ -424,6 +440,7 @@ def run_triton(A_gpu, B_gpu, C_gpu, M, N, K, batch, dtype):
     BM  = min(max(16, _next_pow2(M)), cap)
     BN  = min(max(16, _next_pow2(N)), cap)
     BK  = min(max(16, _next_pow2(K)), cap)
+    ns  = _safe_num_stages(BM, BN, BK, dtype)
     grid = (math.ceil(M / BM) * math.ceil(N / BN), batch)
 
     kwargs = dict(
@@ -436,11 +453,11 @@ def run_triton(A_gpu, B_gpu, C_gpu, M, N, K, batch, dtype):
     )
 
     if dtype == 'fp64':
-        _batched_gemm_fp64[grid](A_gpu, B_gpu, C_gpu, **kwargs)
-        return f"fp64 TC  [BLOCK={BM}×{BN}×{BK}]"
+        _batched_gemm_fp64[grid](A_gpu, B_gpu, C_gpu, **kwargs, num_stages=ns)
+        return f"fp64 TC  [BLOCK={BM}×{BN}×{BK}  stages={ns}]"
     else:
-        _batched_gemm_fp32[grid](A_gpu, B_gpu, C_gpu, **kwargs)
-        return f"fp32 TC  [BLOCK={BM}×{BN}×{BK}]"
+        _batched_gemm_fp32[grid](A_gpu, B_gpu, C_gpu, **kwargs, num_stages=ns)
+        return f"fp32 TC  [BLOCK={BM}×{BN}×{BK}  stages={ns}]"
 
 
 # ─── per-size, per-dtype benchmark ───────────────────────────────────────────
@@ -450,7 +467,17 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
     """Run TensorForge and Triton for one (M,N,K) size and one dtype."""
     np_dtype = np.float64 if dtype == 'fp64' else np.float32
     th_dtype = torch.float64 if dtype == 'fp64' else torch.float32
-    tol      = 1e-6 if dtype == 'fp64' else 1e-4
+    # Relative-error tolerances.  C values are O(sqrt(K)) for N(0,1) inputs.
+    # fp64: allow_tf32=False in kernel → near machine-eps; 1e-5 relative is generous.
+    # fp32 sm_75: true fp32 path → ~1e-4 relative.
+    # fp32 sm_80+: tl.dot uses TF32 (10-bit mantissa, ~1e-3 relative per op);
+    #   accumulated over K steps ~ sqrt(K)*1e-3 ≈ 1e-2 relative → use 5e-2.
+    if dtype == 'fp64':
+        rtol = 1e-5
+    elif supports_fp64_tcdot():   # sm_80+ → TF32
+        rtol = 5e-2
+    else:
+        rtol = 1e-4
     peak     = device_peak_gflops(dtype)
 
     rng  = np.random.default_rng(42)
@@ -505,9 +532,10 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
                 call_tf()
                 torch.cuda.synchronize()
                 # TF wrote col-major [M,N] in [batch,N,M] storage; permute back
-                C_tf_rm = C_tf.permute(0, 2, 1).contiguous().cpu().numpy()
-                max_err = np.max(np.abs(C_tf_rm - C_ref))
-                ok = "✓" if max_err < tol else f"✗ max_err={max_err:.2e} (tol={tol:.0e})"
+                C_tf_rm  = C_tf.permute(0, 2, 1).contiguous().cpu().numpy()
+                ref_norm = np.max(np.abs(C_ref)) + 1e-30
+                rel_err  = np.max(np.abs(C_tf_rm - C_ref)) / ref_norm
+                ok = "✓" if rel_err < rtol else f"✗ rel_err={rel_err:.2e} (rtol={rtol:.0e})"
                 t  = cuda_time(call_tf, warmup, repeats)
                 gf = gflops(M, N, K, batch, t)
                 print(f"  TensorForge [{dtype}]: {gf:8.1f} GFLOPs/s  "
@@ -538,8 +566,10 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
                 print(f"  Triton      [{dtype}]: JIT failed: {e}")
                 return
 
-            max_err = np.max(np.abs(C_triton.cpu().numpy() - C_ref))
-            ok = "✓" if max_err < tol else f"✗ max_err={max_err:.2e} (tol={tol:.0e})"
+            max_err  = np.max(np.abs(C_triton.cpu().numpy() - C_ref))
+            ref_norm = np.max(np.abs(C_ref)) + 1e-30
+            rel_err  = max_err / ref_norm
+            ok = "✓" if rel_err < rtol else f"✗ rel_err={rel_err:.2e} (rtol={rtol:.0e})"
             t  = cuda_time(call_triton, warmup, repeats)
             gf = gflops(M, N, K, batch, t)
             print(f"  Triton      [{dtype}]: {gf:8.1f} GFLOPs/s  "
