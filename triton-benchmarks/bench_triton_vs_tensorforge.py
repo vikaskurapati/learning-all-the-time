@@ -436,11 +436,20 @@ def run_triton(A_gpu, B_gpu, C_gpu, M, N, K, batch, dtype):
     dtype : 'fp32' or 'fp64'
     On sm_75 fp64 is not supported; caller should skip or catch the error.
     """
+    elem_bytes = 8 if dtype == 'fp64' else 4
     cap = max_block_dim()
     BM  = min(max(16, _next_pow2(M)), cap)
     BN  = min(max(16, _next_pow2(N)), cap)
     BK  = min(max(16, _next_pow2(K)), cap)
-    ns  = _safe_num_stages(BM, BN, BK, dtype)
+
+    # Shrink BM/BK until at least 1 pipeline stage fits in shared memory.
+    # BN is kept fixed (it covers the narrow N dimension and is usually small).
+    limit = _shmem_limit_bytes()
+    while BM > 16 and BK > 16 and (BM * BK + BK * BN) * elem_bytes > limit:
+        BM = max(16, BM // 2)
+        BK = max(16, BK // 2)
+
+    ns   = _safe_num_stages(BM, BN, BK, dtype)
     grid = (math.ceil(M / BM) * math.ceil(N / BN), batch)
 
     kwargs = dict(
