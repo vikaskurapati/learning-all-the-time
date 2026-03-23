@@ -496,11 +496,24 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
     # Reference: C = alpha * A @ B  (beta=0)
     C_ref = (np_dtype(ALPHA) * np.einsum("bik,bkj->bij", A_np, B_np)).astype(np_dtype)
 
-    # Row-major GPU tensors used by Triton
-    A_gpu = torch.from_numpy(A_np).to(th_dtype).cuda().contiguous()
-    B_gpu = torch.from_numpy(B_np).to(th_dtype).cuda().contiguous()
+    # SeisSol uses Column-Major (Fortran) layout.
+    # To benchmark this accurately in Triton, we use F-contiguous tensors.
+    # (TensorForge section below already handles this via manual transposes).
+    #
+    # Create F-contiguous tensors:
+    # 1. Transpose logical dims (swap M/K)
+    # 2. Make contiguous (physically stores as K-major)
+    # 3. Transpose back (logical shape restored, but strides are now column-major)
+    A_gpu = torch.from_numpy(A_np).to(th_dtype).cuda()
+    A_gpu = A_gpu.transpose(1, 2).contiguous().transpose(1, 2)
+
+    B_gpu = torch.from_numpy(B_np).to(th_dtype).cuda()
+    B_gpu = B_gpu.transpose(1, 2).contiguous().transpose(1, 2)
 
     print(f"\n  ── {dtype} ─────────────────────────────────────")
+    print(f"  Layout: Column-Major (SeisSol-compatible)")
+    print(f"  A strides: {A_gpu.stride()}")
+    print(f"  B strides: {B_gpu.stride()}")
 
     # ── TensorForge ──────────────────────────────────────────────────────────
     # TensorForge follows the column-major (Fortran/BLAS) convention used by
@@ -560,7 +573,11 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
                   f"{torch.cuda.get_device_properties(0).minor})")
         else:
             # BETA=0 so C's initial value doesn't matter; start from zeros
-            C_triton = torch.zeros(batch, M, N, dtype=th_dtype, device='cuda')
+            # SeisSol uses Column-Major (Fortran) layout for C too.
+            # Create a Column-Major output buffer (F-contiguous):
+            # Logical shape: [batch, M, N]. To get F-contiguous, we create [batch, N, M] then transpose.
+            C_triton = torch.zeros(batch, N, M, dtype=th_dtype, device='cuda')
+            C_triton = C_triton.transpose(1, 2).contiguous().transpose(1, 2)
             triton_tag = ""
 
             def call_triton():
