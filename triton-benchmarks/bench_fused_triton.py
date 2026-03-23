@@ -808,7 +808,7 @@ def bench_size(label, M, N, K, batch, warmup, repeats, arch, skip_tf, skip_trito
 # ─── main ────────────────────────────────────────────────────────────────────
 
 def plot_roofline(filename='roofline_plot.png'):
-    """Generate Roofline plot from collected results."""
+    """Generate Roofline plot from collected results (Split FP32/FP64)."""
     try:
         import matplotlib
         matplotlib.use('Agg')
@@ -825,14 +825,14 @@ def plot_roofline(filename='roofline_plot.png'):
 
     print(f"\nGenerating Roofline plot -> {filename} ...")
     
-    plt.figure(figsize=(14, 9))
+    # Create subplots: 1 row, 2 columns (FP32 left, FP64 right)
+    fig, axes = plt.subplots(1, 2, figsize=(20, 9))
     
     # Define colors/markers
     roofline_colors = {'fp32': 'tab:blue', 'fp64': 'tab:orange'}
     markers = {'sequential': 'o', 'fused': '^', 'tf': 's'}
     
     # Extract unique orders and assign colors
-    # Labels are like "vol ord2", "flux ord6"
     def get_order(lbl):
         parts = lbl.split()
         for p in parts:
@@ -841,19 +841,22 @@ def plot_roofline(filename='roofline_plot.png'):
         return "ord?"
 
     unique_orders = sorted(list(set(get_order(r['label']) for r in BENCH_RESULTS)))
-    # Sort by number: ord2 -> 2
     unique_orders.sort(key=lambda x: int(x.replace('ord', '')) if x.replace('ord', '').isdigit() else 999)
     
     # Color map for orders
     cmap = plt.get_cmap('viridis', len(unique_orders))
     order_colors = {ord_name: cmap(i) for i, ord_name in enumerate(unique_orders)}
 
-    # Plot Rooflines
-    min_ai = 0.1
-    max_ai = 100.0
-    
-    for dtype in ['fp32', 'fp64']:
-        if dtype not in SYS_PEAKS: continue
+    # Plot FP32 and FP64 in separate subplots
+    dtypes = ['fp32', 'fp64']
+    min_ai, max_ai = 0.05, 200.0
+
+    for i, dtype in enumerate(dtypes):
+        ax = axes[i]
+        
+        if dtype not in SYS_PEAKS:
+            ax.text(0.5, 0.5, f"No {dtype} Peak Measured", ha='center')
+            continue
         
         peak_bw = SYS_PEAKS['bw']
         peak_flops = SYS_PEAKS[dtype]['compute']
@@ -862,32 +865,46 @@ def plot_roofline(filename='roofline_plot.png'):
         # Roofline: y = min(peak_flops, x * peak_bw)
         ridge_ai = peak_flops / peak_bw
         
-        # Points for line
+        # Draw Roofline
         x = [min_ai, ridge_ai, max_ai]
         y = [min_ai * peak_bw, peak_flops, peak_flops]
         
-        plt.plot(x, y, color=color, linestyle='--', linewidth=2, label=f'{dtype} Roofline')
-        plt.text(ridge_ai, peak_flops * 1.05, f'{dtype} Peak: {peak_flops:.0f} GF', 
-                 color=color, fontsize=10, ha='center', weight='bold')
-        plt.text(min_ai * 1.2, min_ai * 1.2 * peak_bw * 1.2, f'{peak_bw:.0f} GB/s',
-                 color=color, fontsize=10, rotation=30, weight='bold')
+        ax.plot(x, y, color=color, linestyle='--', linewidth=2, label=f'{dtype} Roofline')
+        ax.text(ridge_ai, peak_flops * 1.15, f'{dtype} Peak: {peak_flops:.0f} GF', 
+                 color=color, fontsize=11, ha='center', weight='bold')
+        ax.text(min_ai * 1.5, min_ai * 1.5 * peak_bw * 1.2, f'{peak_bw:.0f} GB/s',
+                 color=color, fontsize=11, rotation=30, weight='bold')
 
-    # Plot Benchmarks
-    for res in BENCH_RESULTS:
-        ai = res['ai']
-        gflops = res['gflops']
-        dtype = res['dtype']
-        ktype = res['type']  # 'fused', 'sequential', 'tf'
-        label = res['label'] # 'vol ord2'
+        # Filter points for this dtype
+        subset = [r for r in BENCH_RESULTS if r['dtype'] == dtype]
         
-        ord_name = get_order(label)
-        c = order_colors.get(ord_name, 'black')
-        m = markers.get(ktype, 'x')
-        
-        # Add label only once for legend? No, we build legend manually.
-        plt.scatter(ai, gflops, color=c, marker=m, s=120, edgecolors='black', linewidth=0.5, alpha=0.9, zorder=3)
+        for res in subset:
+            ai = res['ai']
+            gflops = res['gflops']
+            ktype = res['type']
+            label = res['label']
+            
+            ord_name = get_order(label)
+            c = order_colors.get(ord_name, 'black')
+            m = markers.get(ktype, 'x')
+            
+            ax.scatter(ai, gflops, color=c, marker=m, s=150, edgecolors='black', linewidth=0.5, alpha=0.9, zorder=3)
 
-    # Build Custom Legend
+        # Config Plot
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.set_xlim(min_ai, max_ai)
+        ax.set_ylim(bottom=10.0) # Avoid log(0) or very low values
+        
+        ax.set_title(f"{dtype.upper()} Performance", fontsize=16, weight='bold')
+        ax.set_xlabel('Arithmetic Intensity (FLOPs/Byte)', fontsize=13)
+        if i == 0:
+            ax.set_ylabel('Performance (GFLOPs/s)', fontsize=13)
+            
+        ax.grid(True, which="major", ls="-", alpha=0.4)
+        ax.grid(True, which="minor", ls=":", alpha=0.2)
+
+    # Build Shared Legend
     legend_elements = []
     
     # 1. Implementation
@@ -903,21 +920,11 @@ def plot_roofline(filename='roofline_plot.png'):
         c = order_colors[ord_name]
         legend_elements.append(mlines.Line2D([], [], marker='o', color='w', label=ord_name, markerfacecolor=c, markersize=10, markeredgecolor='k'))
 
-    # 3. Rooflines
-    legend_elements.append(mlines.Line2D([], [], color='none', label=''))
-    legend_elements.append(mlines.Line2D([], [], color='tab:blue', lw=2, linestyle='--', label='fp32 Limit'))
-    legend_elements.append(mlines.Line2D([], [], color='tab:orange', lw=2, linestyle='--', label='fp64 Limit'))
-
-    plt.legend(handles=legend_elements, loc='lower right', fontsize='small', ncol=1, framealpha=0.9)
-
-    plt.xscale('log')
-    plt.yscale('log')
-    plt.xlabel('Arithmetic Intensity (FLOPs/Byte)', fontsize=12)
-    plt.ylabel('Performance (GFLOPs/s)', fontsize=12)
-    plt.title('Roofline Analysis: Triton Fused vs Sequential vs TensorForge', fontsize=14)
-    plt.grid(True, which="major", ls="-", alpha=0.4)
-    plt.grid(True, which="minor", ls=":", alpha=0.2)
-    plt.tight_layout()
+    # Place legend to the right
+    fig.legend(handles=legend_elements, loc='center right', bbox_to_anchor=(0.98, 0.5), fontsize='medium', framealpha=0.9)
+    plt.subplots_adjust(right=0.88, wspace=0.15)
+    
+    plt.suptitle('Roofline Analysis: Triton Fused vs Sequential vs TensorForge', fontsize=18)
     plt.savefig(filename, dpi=300)
     print("Done.")
 
