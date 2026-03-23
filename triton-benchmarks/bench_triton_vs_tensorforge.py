@@ -575,9 +575,9 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
             # BETA=0 so C's initial value doesn't matter; start from zeros
             # SeisSol uses Column-Major (Fortran) layout for C too.
             # Create a Column-Major output buffer (F-contiguous):
-            # Logical shape: [batch, M, N]. To get F-contiguous, we create [batch, N, M] then transpose.
-            C_triton = torch.zeros(batch, N, M, dtype=th_dtype, device='cuda')
-            C_triton = C_triton.transpose(1, 2).contiguous().transpose(1, 2)
+            # Logical shape: [batch, M, N]. We allocate [batch, N, M] (Row-Major) and transpose.
+            # This gives us a view with shape [batch, M, N] and strides (batch*M*N, 1, M).
+            C_triton = torch.zeros(batch, N, M, dtype=th_dtype, device='cuda').transpose(1, 2)
             triton_tag = ""
 
             def call_triton():
