@@ -600,37 +600,7 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
             print(f"  Triton      [{dtype}]: skipped (no fp64 TC)")
         else:
             C_seq = torch.zeros(batch, N, M, dtype=th_dtype, device='cuda').transpose(1, 2)
-
-            # DEBUG: Check step 0 standalone
-            if repeats > 0: # run once
-                C_dbg = torch.zeros_like(C_seq)
-                run_triton_sequential(As_gpu[0], Bs_gpu[0], C_dbg, M, N, K, batch, dtype, beta=0.0)
-                torch.cuda.synchronize()
-                # A, B are (batch, M, K) and (batch, K, N) ? 
-                # As_gpu[i]: (batch, M, K). Bs_gpu[i]: (batch, N, K). Wait.
-                # In creation loop:
-                # a = randn(..., K, M).transpose(1, 2) -> (..., M, K)
-                # b = randn(..., N, K).transpose(1, 2) -> (..., K, N)
-                # Wait! b is (K, N)?
-                # b = torch.randn(batch, N, K).transpose(1, 2) -> (batch, K, N).
-                # Matrix mult: (M, K) * (K, N) -> (M, N).
-                # So B should be (K, N).
-                
-                # Let's check loop again.
-                # b = torch.randn(batch, N, K, ...).transpose(1, 2)
-                # This makes it (batch, K, N).
-                # So A*B is valid.
-                
-                C_ref_0 = torch.bmm(As_gpu[0], Bs_gpu[0])
-                err_0 = (C_dbg - C_ref_0).abs().max().item()
-                if err_0 > 1e-1:
-                    print(f"  [DEBUG] Step 0 error: {err_0:.2e}")
-                    print(f"  [DEBUG] C stride: {C_seq.stride()}")
-                    print(f"  [DEBUG] A stride: {As_gpu[0].stride()}")
-                    print(f"  [DEBUG] B stride: {Bs_gpu[0].stride()}")
-                    print(f"  [DEBUG] C_triton[0,0,0]: {C_dbg[0,0,0].item()}")
-                    print(f"  [DEBUG] C_ref[0,0,0]:    {C_ref_0[0,0,0].item()}")
-
+            
             def call_triton_seq():
                 # We don't rely on zero_() which adds kernel overhead.
                 # Instead, we use beta=0 for the first call (overwrite) and beta=1 for subsequent calls.
