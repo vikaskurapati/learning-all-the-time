@@ -576,16 +576,26 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
                     # We manually accumulate (C += A*B) using a temp buffer to fix correctness.
                     # This adds overhead (extra kernel + memory traffic), but is necessary for validation.
                     
+                    debug = getattr(call_tf_seq, 'once', True)
+                    
                     # 1. C_tf = A0 * B0 (overwrite)
                     run_tf(tf_func, C_tf, As_tf[0], Bs_tf[0], batch)
-                    
+                    if debug:
+                         print(f"    [DEBUG] TF Step1 max: {C_tf.abs().max().item():.2e}")
+
                     # 2. C_tmp = A1 * B1; C_tf += C_tmp
                     run_tf(tf_func, C_tmp, As_tf[1], Bs_tf[1], batch)
+                    if debug:
+                         print(f"    [DEBUG] TF Step2 tmp max: {C_tmp.abs().max().item():.2e}")
                     C_tf.add_(C_tmp)
 
                     # 3. C_tmp = A2 * B2; C_tf += C_tmp
                     run_tf(tf_func, C_tmp, As_tf[2], Bs_tf[2], batch)
+                    if debug:
+                         print(f"    [DEBUG] TF Step3 tmp max: {C_tmp.abs().max().item():.2e}")
                     C_tf.add_(C_tmp)
+                    
+                    call_tf_seq.once = False
 
                 # Correctness check
                 call_tf_seq()
