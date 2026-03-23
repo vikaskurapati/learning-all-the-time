@@ -334,6 +334,23 @@ def run_tf(func, C_gpu, A_gpu, B_gpu, batch):
 # For fp64 (which has no TF32 analog) allow_tf32=False is explicit and correct.
 
 if HAS_TRITON:
+    def get_autotune_configs():
+        return [
+            triton.Config({'BLOCK_M': 16, 'BLOCK_N': 16, 'BLOCK_K': 16}, num_stages=2, num_warps=2),
+            triton.Config({'BLOCK_M': 32, 'BLOCK_N': 16, 'BLOCK_K': 16}, num_stages=2, num_warps=2),
+            triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32, 'BLOCK_K': 32}, num_stages=2, num_warps=2),
+            triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32, 'BLOCK_K': 32}, num_stages=4, num_warps=4),
+            triton.Config({'BLOCK_M': 64, 'BLOCK_N': 32, 'BLOCK_K': 32}, num_stages=4, num_warps=4),
+            triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_K': 32}, num_stages=4, num_warps=4),
+            triton.Config({'BLOCK_M': 128, 'BLOCK_N': 64, 'BLOCK_K': 32}, num_stages=4, num_warps=4),
+            triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32}, num_stages=3, num_warps=8),
+            triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32}, num_stages=4, num_warps=8),
+        ]
+
+    @triton.autotune(
+        configs=get_autotune_configs(),
+        key=['M', 'N', 'K'],
+    )
     @triton.jit
     def _batched_gemm_fp64(
         A_ptr, B_ptr, C_ptr,
@@ -380,6 +397,10 @@ if HAS_TRITON:
         c_old  = tl.load(c_ptrs, mask=c_mask, other=0.0)
         tl.store(c_ptrs, alpha * acc + beta * c_old, mask=c_mask)
 
+    @triton.autotune(
+        configs=get_autotune_configs(),
+        key=['M', 'N', 'K'],
+    )
     @triton.jit
     def _batched_gemm_fp32(
         A_ptr, B_ptr, C_ptr,
@@ -437,36 +458,30 @@ def run_triton(A_gpu, B_gpu, C_gpu, M, N, K, batch, dtype):
     On sm_75 fp64 is not supported; caller should skip or catch the error.
     """
     elem_bytes = 8 if dtype == 'fp64' else 4
-    cap = max_block_dim()
-    BM  = min(max(16, _next_pow2(M)), cap)
-    BN  = min(max(16, _next_pow2(N)), cap)
-    BK  = min(max(16, _next_pow2(K)), cap)
-
-    # Shrink BM/BK until at least 1 pipeline stage fits in shared memory.
-    # BN is kept fixed (it covers the narrow N dimension and is usually small).
-    limit = _shmem_limit_bytes()
-    while BM > 16 and BK > 16 and (BM * BK + BK * BN) * elem_bytes > limit:
-        BM = max(16, BM // 2)
-        BK = max(16, BK // 2)
-
-    ns   = _safe_num_stages(BM, BN, BK, dtype)
-    grid = (math.ceil(M / BM) * math.ceil(N / BN), batch)
-
+    # Autotuner handles block sizes.
+    # We pass args via kwargs, but remove the fixed BLOCK params which are now tuned.
     kwargs = dict(
         M=M, N=N, K=K,
         stride_ab=A_gpu.stride(0), stride_am=A_gpu.stride(1), stride_ak=A_gpu.stride(2),
         stride_bb=B_gpu.stride(0), stride_bk=B_gpu.stride(1), stride_bn=B_gpu.stride(2),
         stride_cb=C_gpu.stride(0), stride_cm=C_gpu.stride(1), stride_cn=C_gpu.stride(2),
         alpha=ALPHA, beta=BETA,
-        BLOCK_M=BM, BLOCK_N=BN, BLOCK_K=BK,
     )
 
     if dtype == 'fp64':
-        _batched_gemm_fp64[grid](A_gpu, B_gpu, C_gpu, **kwargs, num_stages=ns)
-        return f"fp64 TC  [BLOCK={BM}×{BN}×{BK}  stages={ns}]"
+        kernel = _batched_gemm_fp64
     else:
-        _batched_gemm_fp32[grid](A_gpu, B_gpu, C_gpu, **kwargs, num_stages=ns)
-        return f"fp32 TC  [BLOCK={BM}×{BN}×{BK}  stages={ns}]"
+        kernel = _batched_gemm_fp32
+        
+    grid = lambda META: (triton.cdiv(M, META['BLOCK_M']) * triton.cdiv(N, META['BLOCK_N']), batch)
+    kernel[grid](A_gpu, B_gpu, C_gpu, **kwargs)
+    
+    # best_config is available after the first run (JIT compilation phase)
+    # Note: call_triton in bench_dtype calls this function. The first call triggers autotuning.
+    best_config = kernel.best_config
+    BM, BN, BK = best_config.kwargs['BLOCK_M'], best_config.kwargs['BLOCK_N'], best_config.kwargs['BLOCK_K']
+    ns, warps = best_config.num_stages, best_config.num_warps
+    return f"{dtype} TC  [BLOCK={BM}×{BN}×{BK}  stages={ns} warps={warps}]"
 
 
 # ─── per-size, per-dtype benchmark ───────────────────────────────────────────
