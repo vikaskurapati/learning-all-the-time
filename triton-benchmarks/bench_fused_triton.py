@@ -128,10 +128,110 @@ def parse_args():
 
 # ─── device helpers ──────────────────────────────────────────────────────────
 
+SYS_PEAKS = {}
+BENCH_RESULTS = []
+
+def measure_system_peaks(dtype='fp32'):
+    """Measure peak Memory Bandwidth and Compute for the current device."""
+    print(f"\n[Roofline] Measuring system peaks ({dtype})...")
+    
+    # 1. Measure Peak Bandwidth (HBM)
+    # Use a large copy: 256MB per tensor
+    n_elem = 64 * 1024 * 1024
+    t_dtype = torch.float32 if dtype == 'fp32' else torch.float64
+    elem_bytes = 4 if dtype == 'fp32' else 8
+    
+    src = torch.randn(n_elem, dtype=t_dtype, device='cuda')
+    dst = torch.empty_like(src)
+    
+    # Warmup
+    for _ in range(5):
+        dst.copy_(src)
+    torch.cuda.synchronize()
+    
+    t0 = torch.cuda.Event(enable_timing=True)
+    t1 = torch.cuda.Event(enable_timing=True)
+    
+    repeats = 50
+    t0.record()
+    for _ in range(repeats):
+        dst.copy_(src)
+    t1.record()
+    t1.synchronize()
+    
+    elapsed_ms = t0.elapsed_time(t1)
+    total_bytes = repeats * 2 * n_elem * elem_bytes # Read + Write
+    measured_bw = (total_bytes / 1e9) / (elapsed_ms / 1000.0) # GB/s
+    print(f"  Measured HBM BW:   {measured_bw:6.1f} GB/s")
+
+    # 2. Measure Peak Compute (TFLOPs)
+    # Use a large GEMM (8192x8192)
+    # Note: GH200 fp32 peak is via Tensor Cores (if using tf32) or CUDA cores?
+    # torch.mm uses TF32 by default on Ampere+.
+    N = 8192
+    A = torch.randn(N, N, dtype=t_dtype, device='cuda')
+    B = torch.randn(N, N, dtype=t_dtype, device='cuda')
+    
+    # Warmup
+    torch.mm(A, B)
+    torch.cuda.synchronize()
+    
+    t0.record()
+    gemm_repeats = 5
+    for _ in range(gemm_repeats):
+        torch.mm(A, B)
+    t1.record()
+    t1.synchronize()
+    
+    elapsed_ms = t0.elapsed_time(t1)
+    total_flops = gemm_repeats * 2 * N**3
+    measured_flops = (total_flops / 1e9) / (elapsed_ms / 1000.0) # GFLOPs
+    print(f"  Measured Compute:  {measured_flops:6.1f} GFLOPs/s")
+    
+    return measured_bw, measured_flops
+
 def gflops(M, N, K, batch, elapsed_s):
     """Standard GEMM FLOPs: 2*M*N*K fused multiply-adds per batch element."""
     return batch * 2 * M * N * K / elapsed_s / 1e9
 
+def get_arithmetic_intensity(M, N, K, dtype, kernel_type='fused'):
+    """Calculate Arithmetic Intensity (FLOPs / Byte) for the specific kernel type.
+    
+    Fused:
+        Loads: 3 * (A + B)  [Read-only, cached ideally, but we count compulsory loads]
+        Stores: C
+        Bytes = (3*(M*K + K*N) + M*N) * sizeof(dtype)
+        FLOPs = 3 * 2*M*N*K
+    
+    Sequential (Baseline):
+        3 separate kernels.
+        K1: Load A1, B1. Store C. (Beta=0) -> 1x(A+B) + 1x(C_write)
+        K2: Load A2, B2, C. Store C. (Beta=1) -> 1x(A+B) + 1x(C_read) + 1x(C_write)
+        K3: Load A3, B3, C. Store C. (Beta=1) -> 1x(A+B) + 1x(C_read) + 1x(C_write)
+        Total Bytes = [ 3*(M*K + K*N) + 5*(M*N) ] * sizeof(dtype)
+        FLOPs = 3 * 2*M*N*K
+    """
+    bytes_per_elem = 8 if dtype == 'fp64' else 4
+    
+    # Data Volume (Elements)
+    vol_A = M*K
+    vol_B = K*N
+    vol_C = M*N
+    
+    if kernel_type == 'fused':
+        # 3x A, 3x B, 1x C (write only)
+        total_elems = 3*(vol_A + vol_B) + vol_C
+    else:
+        # Sequential:
+        # 1: A+B+C(w)
+        # 2: A+B+C(r)+C(w)
+        # 3: A+B+C(r)+C(w)
+        total_elems = 3*(vol_A + vol_B) + 5*vol_C
+        
+    total_bytes = total_elems * bytes_per_elem
+    total_flops = 3 * 2 * M * N * K
+    
+    return total_flops / total_bytes
 
 def device_peak_gflops(dtype):
     """Approximate peak GFLOPs/s for this device and dtype.
@@ -548,6 +648,21 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
 
     print(f"\n  ── {dtype} ─────────────────────────────────────")
     
+    # Roofline info
+    bw = SYS_PEAKS.get('bw', None)
+    peak = SYS_PEAKS.get(dtype, {}).get('compute', None)
+    
+    if bw and peak:
+        ai_seq = get_arithmetic_intensity(M, N, K, dtype, 'sequential')
+        ai_fus = get_arithmetic_intensity(M, N, K, dtype, 'fused')
+        
+        rl_seq = min(peak, ai_seq * bw)
+        rl_fus = min(peak, ai_fus * bw)
+        
+        print(f"  [Roofline] System: {peak:.0f} GFLOPs/s, {bw:.0f} GB/s")
+        print(f"  [Roofline] Seq:   AI={ai_seq:.2f} FLOP/B  -> Roofline: {rl_seq:.0f} GFLOPs/s")
+        print(f"  [Roofline] Fused: AI={ai_fus:.2f} FLOP/B  -> Roofline: {rl_fus:.0f} GFLOPs/s")
+    
     # ── TensorForge (Sequential) ─────────────────────────────────────────────
     if not skip_tf:
         if not HAS_TF:
@@ -576,26 +691,16 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
                     # We manually accumulate (C += A*B) using a temp buffer to fix correctness.
                     # This adds overhead (extra kernel + memory traffic), but is necessary for validation.
                     
-                    debug = getattr(call_tf_seq, 'once', True)
-                    
                     # 1. C_tf = A0 * B0 (overwrite)
                     run_tf(tf_func, C_tf, As_tf[0], Bs_tf[0], batch)
-                    if debug:
-                         print(f"    [DEBUG] TF Step1 max: {C_tf.abs().max().item():.2e}")
 
                     # 2. C_tmp = A1 * B1; C_tf += C_tmp
                     run_tf(tf_func, C_tmp, As_tf[1], Bs_tf[1], batch)
-                    if debug:
-                         print(f"    [DEBUG] TF Step2 tmp max: {C_tmp.abs().max().item():.2e}")
                     C_tf.add_(C_tmp)
 
                     # 3. C_tmp = A2 * B2; C_tf += C_tmp
                     run_tf(tf_func, C_tmp, As_tf[2], Bs_tf[2], batch)
-                    if debug:
-                         print(f"    [DEBUG] TF Step3 tmp max: {C_tmp.abs().max().item():.2e}")
                     C_tf.add_(C_tmp)
-                    
-                    call_tf_seq.once = False
 
                 # Correctness check
                 call_tf_seq()
@@ -609,6 +714,8 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
                 # Total FLOPs = 3 * (2*M*N*K * batch)
                 gf = (3 * batch * 2 * M * N * K) / t / 1e9
                 print(f"  TensorForge [{dtype}]: {gf:8.1f} GFLOPs/s  ({100*gf/peak:.1f}%)  correctness {ok}")
+                ai_seq = get_arithmetic_intensity(M, N, K, dtype, 'sequential')
+                BENCH_RESULTS.append({'label': label, 'dtype': dtype, 'type': 'tf', 'ai': ai_seq, 'gflops': gf})
 
     # ── Triton (Sequential) ──────────────────────────────────────────────────
     if not skip_triton:
@@ -636,6 +743,8 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
             t = cuda_time(call_triton_seq, warmup, repeats)
             gf = (3 * batch * 2 * M * N * K) / t / 1e9
             print(f"  Triton SEQ  [{dtype}]: {gf:8.1f} GFLOPs/s  ({100*gf/peak:.1f}%)  correctness {ok}")
+            ai_seq = get_arithmetic_intensity(M, N, K, dtype, 'sequential')
+            BENCH_RESULTS.append({'label': label, 'dtype': dtype, 'type': 'sequential', 'ai': ai_seq, 'gflops': gf})
 
 
     # ── Triton (Fused) ───────────────────────────────────────────────────────
@@ -669,6 +778,8 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
             t = cuda_time(call_triton_fused, warmup, repeats)
             gf = (3 * batch * 2 * M * N * K) / t / 1e9
             print(f"  Triton FUSD [{dtype}]: {gf:8.1f} GFLOPs/s  ({100*gf/peak:.1f}%)  correctness {ok}  [{tag}]")
+            ai_fus = get_arithmetic_intensity(M, N, K, dtype, 'fused')
+            BENCH_RESULTS.append({'label': label, 'dtype': dtype, 'type': 'fused', 'ai': ai_fus, 'gflops': gf})
 
 
 def bench_size(label, M, N, K, batch, warmup, repeats, arch, skip_tf, skip_triton):
@@ -681,6 +792,120 @@ def bench_size(label, M, N, K, batch, warmup, repeats, arch, skip_tf, skip_trito
 
 
 # ─── main ────────────────────────────────────────────────────────────────────
+
+def plot_roofline(filename='roofline_plot.png'):
+    """Generate Roofline plot from collected results."""
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import matplotlib.lines as mlines
+        import matplotlib.cm as cm
+    except ImportError:
+        print("\nWARNING: matplotlib not found. Skipping plot generation.")
+        return
+
+    if not SYS_PEAKS:
+        print("WARNING: No system peaks measured. Skipping plot.")
+        return
+
+    print(f"\nGenerating Roofline plot -> {filename} ...")
+    
+    plt.figure(figsize=(14, 9))
+    
+    # Define colors/markers
+    roofline_colors = {'fp32': 'tab:blue', 'fp64': 'tab:orange'}
+    markers = {'sequential': 'o', 'fused': '^', 'tf': 's'}
+    
+    # Extract unique orders and assign colors
+    # Labels are like "vol ord2", "flux ord6"
+    def get_order(lbl):
+        parts = lbl.split()
+        for p in parts:
+            if p.startswith('ord'):
+                return p
+        return "ord?"
+
+    unique_orders = sorted(list(set(get_order(r['label']) for r in BENCH_RESULTS)))
+    # Sort by number: ord2 -> 2
+    unique_orders.sort(key=lambda x: int(x.replace('ord', '')) if x.replace('ord', '').isdigit() else 999)
+    
+    # Color map for orders
+    cmap = plt.get_cmap('viridis', len(unique_orders))
+    order_colors = {ord_name: cmap(i) for i, ord_name in enumerate(unique_orders)}
+
+    # Plot Rooflines
+    min_ai = 0.1
+    max_ai = 100.0
+    
+    for dtype in ['fp32', 'fp64']:
+        if dtype not in SYS_PEAKS: continue
+        
+        peak_bw = SYS_PEAKS['bw']
+        peak_flops = SYS_PEAKS[dtype]['compute']
+        color = roofline_colors.get(dtype, 'gray')
+        
+        # Roofline: y = min(peak_flops, x * peak_bw)
+        ridge_ai = peak_flops / peak_bw
+        
+        # Points for line
+        x = [min_ai, ridge_ai, max_ai]
+        y = [min_ai * peak_bw, peak_flops, peak_flops]
+        
+        plt.plot(x, y, color=color, linestyle='--', linewidth=2, label=f'{dtype} Roofline')
+        plt.text(ridge_ai, peak_flops * 1.05, f'{dtype} Peak: {peak_flops:.0f} GF', 
+                 color=color, fontsize=10, ha='center', weight='bold')
+        plt.text(min_ai * 1.2, min_ai * 1.2 * peak_bw * 1.2, f'{peak_bw:.0f} GB/s',
+                 color=color, fontsize=10, rotation=30, weight='bold')
+
+    # Plot Benchmarks
+    for res in BENCH_RESULTS:
+        ai = res['ai']
+        gflops = res['gflops']
+        dtype = res['dtype']
+        ktype = res['type']  # 'fused', 'sequential', 'tf'
+        label = res['label'] # 'vol ord2'
+        
+        ord_name = get_order(label)
+        c = order_colors.get(ord_name, 'black')
+        m = markers.get(ktype, 'x')
+        
+        # Add label only once for legend? No, we build legend manually.
+        plt.scatter(ai, gflops, color=c, marker=m, s=120, edgecolors='black', linewidth=0.5, alpha=0.9, zorder=3)
+
+    # Build Custom Legend
+    legend_elements = []
+    
+    # 1. Implementation
+    legend_elements.append(mlines.Line2D([], [], color='none', label='Implementation:'))
+    legend_elements.append(mlines.Line2D([], [], marker='^', color='w', label='Triton Fused', markerfacecolor='gray', markersize=10, markeredgecolor='k'))
+    legend_elements.append(mlines.Line2D([], [], marker='o', color='w', label='Triton Seq', markerfacecolor='gray', markersize=10, markeredgecolor='k'))
+    legend_elements.append(mlines.Line2D([], [], marker='s', color='w', label='TensorForge', markerfacecolor='gray', markersize=10, markeredgecolor='k'))
+    
+    # 2. Orders
+    legend_elements.append(mlines.Line2D([], [], color='none', label=''))
+    legend_elements.append(mlines.Line2D([], [], color='none', label='Order (Size):'))
+    for ord_name in unique_orders:
+        c = order_colors[ord_name]
+        legend_elements.append(mlines.Line2D([], [], marker='o', color='w', label=ord_name, markerfacecolor=c, markersize=10, markeredgecolor='k'))
+
+    # 3. Rooflines
+    legend_elements.append(mlines.Line2D([], [], color='none', label=''))
+    legend_elements.append(mlines.Line2D([], [], color='tab:blue', lw=2, linestyle='--', label='fp32 Limit'))
+    legend_elements.append(mlines.Line2D([], [], color='tab:orange', lw=2, linestyle='--', label='fp64 Limit'))
+
+    plt.legend(handles=legend_elements, loc='lower right', fontsize='small', ncol=1, framealpha=0.9)
+
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('Arithmetic Intensity (FLOPs/Byte)', fontsize=12)
+    plt.ylabel('Performance (GFLOPs/s)', fontsize=12)
+    plt.title('Roofline Analysis: Triton Fused vs Sequential vs TensorForge', fontsize=14)
+    plt.grid(True, which="major", ls="-", alpha=0.4)
+    plt.grid(True, which="minor", ls=":", alpha=0.2)
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300)
+    print("Done.")
 
 def main():
     args = parse_args()
@@ -697,6 +922,17 @@ def main():
     print(f"fp64 TC  : {'yes (sm_80+)' if supports_fp64_tcdot() else 'no (sm<80, Triton fp64 skipped)'}")
     print(f"fp32 peak: {device_peak_gflops('fp32'):.0f} GFLOPs/s")
     print(f"fp64 peak: {device_peak_gflops('fp64'):.0f} GFLOPs/s")
+    
+    # Measure Measured Peaks
+    try:
+        bw, cp32 = measure_system_peaks('fp32')
+        _,  cp64 = measure_system_peaks('fp64')
+        SYS_PEAKS['bw'] = bw
+        SYS_PEAKS['fp32'] = {'compute': cp32}
+        SYS_PEAKS['fp64'] = {'compute': cp64}
+    except Exception as e:
+        print(f"WARNING: Measure peaks failed: {e}")
+
     if HAS_TRITON:
         print(f"Triton   : {triton.__version__}")
     if HAS_TF:
@@ -714,6 +950,8 @@ def main():
 
     print(f"\n{'═'*65}")
     print("Done.")
+    
+    plot_roofline()
 
 
 
