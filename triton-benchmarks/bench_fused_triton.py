@@ -631,7 +631,10 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
         rtol = 1e-4
     
     # 3x operations per "fused" step
-    peak = device_peak_gflops(dtype)
+    if dtype in SYS_PEAKS:
+        peak = SYS_PEAKS[dtype]['compute']
+    else:
+        peak = device_peak_gflops(dtype)
 
     rng  = np.random.default_rng(42)
     
@@ -931,8 +934,6 @@ def main():
     print(f"Memory   : {dev.total_memory / 2**30:.1f} GiB")
     print(f"Batch    : {args.batch:,}   warmup={args.warmup}   repeats={args.repeats}")
     print(f"fp64 TC  : {'yes (sm_80+)' if supports_fp64_tcdot() else 'no (sm<80, Triton fp64 skipped)'}")
-    print(f"fp32 peak: {device_peak_gflops('fp32'):.0f} GFLOPs/s")
-    print(f"fp64 peak: {device_peak_gflops('fp64'):.0f} GFLOPs/s")
     
     # Measure Measured Peaks
     try:
