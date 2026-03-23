@@ -694,8 +694,6 @@ def main():
     print("Done.")
 
 
-if __name__ == "__main__":
-    main()
 
 # --- Sequential Kernels (Baseline) ---
 
@@ -811,3 +809,7 @@ def run_triton_sequential(A_gpu, B_gpu, C_gpu, M, N, K, batch, dtype):
     BM, BN, BK = best_config.kwargs['BLOCK_M'], best_config.kwargs['BLOCK_N'], best_config.kwargs['BLOCK_K']
     ns, warps = best_config.num_stages, best_config.num_warps
     return f"{dtype} SEQ  [BLOCK={BM}x{BN}x{BK}  stages={ns} warps={warps}]"
+
+if __name__ == "__main__":
+    main()
+
