@@ -571,7 +571,9 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
                 C_tf = torch.zeros(batch, N, M, dtype=th_dtype, device='cuda')
 
                 def call_tf_seq():
-                    # Zero accumulator first
+                    # TensorForge kernels are compiled with FIXED beta.
+                    # Our current build_tf_kernel uses BETA global (1.0).
+                    # So we MUST zero the buffer first.
                     C_tf.zero_() 
                     # Call 3 times. Since BETA=1.0, this accumulates: 0 + AB + AB + AB
                     for i in range(3):
@@ -598,11 +600,43 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
             print(f"  Triton      [{dtype}]: skipped (no fp64 TC)")
         else:
             C_seq = torch.zeros(batch, N, M, dtype=th_dtype, device='cuda').transpose(1, 2)
-            
+
+            # DEBUG: Check step 0 standalone
+            if repeats > 0: # run once
+                C_dbg = torch.zeros_like(C_seq)
+                run_triton_sequential(As_gpu[0], Bs_gpu[0], C_dbg, M, N, K, batch, dtype, beta=0.0)
+                torch.cuda.synchronize()
+                # A, B are (batch, M, K) and (batch, K, N) ? 
+                # As_gpu[i]: (batch, M, K). Bs_gpu[i]: (batch, N, K). Wait.
+                # In creation loop:
+                # a = randn(..., K, M).transpose(1, 2) -> (..., M, K)
+                # b = randn(..., N, K).transpose(1, 2) -> (..., K, N)
+                # Wait! b is (K, N)?
+                # b = torch.randn(batch, N, K).transpose(1, 2) -> (batch, K, N).
+                # Matrix mult: (M, K) * (K, N) -> (M, N).
+                # So B should be (K, N).
+                
+                # Let's check loop again.
+                # b = torch.randn(batch, N, K, ...).transpose(1, 2)
+                # This makes it (batch, K, N).
+                # So A*B is valid.
+                
+                C_ref_0 = torch.bmm(As_gpu[0], Bs_gpu[0])
+                err_0 = (C_dbg - C_ref_0).abs().max().item()
+                if err_0 > 1e-1:
+                    print(f"  [DEBUG] Step 0 error: {err_0:.2e}")
+                    print(f"  [DEBUG] C stride: {C_seq.stride()}")
+                    print(f"  [DEBUG] A stride: {As_gpu[0].stride()}")
+                    print(f"  [DEBUG] B stride: {Bs_gpu[0].stride()}")
+                    print(f"  [DEBUG] C_triton[0,0,0]: {C_dbg[0,0,0].item()}")
+                    print(f"  [DEBUG] C_ref[0,0,0]:    {C_ref_0[0,0,0].item()}")
+
             def call_triton_seq():
-                C_seq.zero_()
-                for i in range(3):
-                    run_triton_sequential(As_gpu[i], Bs_gpu[i], C_seq, M, N, K, batch, dtype)
+                # We don't rely on zero_() which adds kernel overhead.
+                # Instead, we use beta=0 for the first call (overwrite) and beta=1 for subsequent calls.
+                run_triton_sequential(As_gpu[0], Bs_gpu[0], C_seq, M, N, K, batch, dtype, beta=0.0)
+                for i in range(1, 3):
+                    run_triton_sequential(As_gpu[i], Bs_gpu[i], C_seq, M, N, K, batch, dtype, beta=1.0)
             
             # Correctness
             call_triton_seq()
@@ -787,14 +821,14 @@ def _batched_gemm_fp32(
     c_old  = tl.load(c_ptrs, mask=c_mask, other=0.0)
     tl.store(c_ptrs, alpha * acc + beta * c_old, mask=c_mask)
 
-def run_triton_sequential(A_gpu, B_gpu, C_gpu, M, N, K, batch, dtype):
+def run_triton_sequential(A_gpu, B_gpu, C_gpu, M, N, K, batch, dtype, beta=BETA):
     """Launch single Triton GEMM in-place on C_gpu."""
     kwargs = dict(
         M=M, N=N, K=K,
         stride_ab=A_gpu.stride(0), stride_am=A_gpu.stride(1), stride_ak=A_gpu.stride(2),
         stride_bb=B_gpu.stride(0), stride_bk=B_gpu.stride(1), stride_bn=B_gpu.stride(2),
         stride_cb=C_gpu.stride(0), stride_cm=C_gpu.stride(1), stride_cn=C_gpu.stride(2),
-        alpha=ALPHA, beta=BETA,
+        alpha=ALPHA, beta=beta,
     )
 
     if dtype == 'fp64':
