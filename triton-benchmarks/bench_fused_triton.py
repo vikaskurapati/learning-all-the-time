@@ -21,6 +21,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import json
+import contextlib
 
 import numpy as np
 import torch
@@ -166,27 +168,36 @@ def measure_system_peaks(dtype='fp32'):
 
     # 2. Measure Peak Compute (TFLOPs)
     # Use a large GEMM (8192x8192)
-    # Note: GH200 fp32 peak is via Tensor Cores (if using tf32) or CUDA cores?
-    # torch.mm uses TF32 by default on Ampere+.
     N = 8192
     A = torch.randn(N, N, dtype=t_dtype, device='cuda')
     B = torch.randn(N, N, dtype=t_dtype, device='cuda')
     
-    # Warmup
-    torch.mm(A, B)
-    torch.cuda.synchronize()
+    # Explicitly enable TF32 for peak measurement if fp32 and capable
+    old_allow_tf32 = torch.backends.cuda.matmul.allow_tf32
+    if dtype == 'fp32' and torch.cuda.get_device_capability()[0] >= 8:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        desc = " (TF32 enabled)"
+    else:
+        desc = ""
     
-    t0.record()
-    gemm_repeats = 5
-    for _ in range(gemm_repeats):
+    try:
+        # Warmup
         torch.mm(A, B)
-    t1.record()
-    t1.synchronize()
+        torch.cuda.synchronize()
+        
+        t0.record()
+        gemm_repeats = 10
+        for _ in range(gemm_repeats):
+            torch.mm(A, B)
+        t1.record()
+        t1.synchronize()
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = old_allow_tf32
     
     elapsed_ms = t0.elapsed_time(t1)
     total_flops = gemm_repeats * 2 * N**3
     measured_flops = (total_flops / 1e9) / (elapsed_ms / 1000.0) # GFLOPs
-    print(f"  Measured Compute:  {measured_flops:6.1f} GFLOPs/s")
+    print(f"  Measured Compute:  {measured_flops:6.1f} GFLOPs/s{desc}")
     
     return measured_bw, measured_flops
 
