@@ -567,17 +567,25 @@ def bench_dtype(label, M, N, K, batch, warmup, repeats, arch, dtype,
                     As_tf.append(torch.from_numpy(np.ascontiguousarray(As_np[i].transpose(0, 2, 1))).to(th_dtype).cuda())
                     Bs_tf.append(torch.from_numpy(np.ascontiguousarray(Bs_np[i].transpose(0, 2, 1))).to(th_dtype).cuda())
                 
-                # C_tf physical shape: [batch, N, M] (to represent col-major [M,N])
                 C_tf = torch.zeros(batch, N, M, dtype=th_dtype, device='cuda')
+                C_tmp = torch.zeros_like(C_tf)
 
                 def call_tf_seq():
-                    # TensorForge kernels are compiled with FIXED beta.
-                    # Our current build_tf_kernel uses BETA global (1.0).
-                    # So we MUST zero the buffer first.
-                    C_tf.zero_() 
-                    # Call 3 times. Since BETA=1.0, this accumulates: 0 + AB + AB + AB
-                    for i in range(3):
-                        run_tf(tf_func, C_tf, As_tf[i], Bs_tf[i], batch)
+                    # Manual accumulation: TensorForge (gemmforge) in this env ignores beta=1.0,
+                    # generating overwrite code (C = alpha*A*B).
+                    # We manually accumulate (C += A*B) using a temp buffer to fix correctness.
+                    # This adds overhead (extra kernel + memory traffic), but is necessary for validation.
+                    
+                    # 1. C_tf = A0 * B0 (overwrite)
+                    run_tf(tf_func, C_tf, As_tf[0], Bs_tf[0], batch)
+                    
+                    # 2. C_tmp = A1 * B1; C_tf += C_tmp
+                    run_tf(tf_func, C_tmp, As_tf[1], Bs_tf[1], batch)
+                    C_tf.add_(C_tmp)
+
+                    # 3. C_tmp = A2 * B2; C_tf += C_tmp
+                    run_tf(tf_func, C_tmp, As_tf[2], Bs_tf[2], batch)
+                    C_tf.add_(C_tmp)
 
                 # Correctness check
                 call_tf_seq()
