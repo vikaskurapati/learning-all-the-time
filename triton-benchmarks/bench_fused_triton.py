@@ -441,7 +441,7 @@ def run_triton_fused(As_gpu, Bs_gpu, C_gpu, M, N, K, batch, dtype):
     else:
         kernel = _fused_gemm_fp32_3x
 
-    grid = lambda META: (triton.cdiv(M, META['BLOCK_M']) * triton.cdiv(N, META['BLOCK_N']), batch)
+    grid = lambda META: (batch, triton.cdiv(M, META['BLOCK_M']) * triton.cdiv(N, META['BLOCK_N']))
     kernel[grid](C_gpu, **kwargs)
     
     best_config = kernel.best_config
@@ -479,8 +479,8 @@ if HAS_TRITON:
         # Note: beta is ignored/assumed 0 for the output store (we overwrite C)
         # Or rather, let's just implement C = sum(AiBi).
         
-        pid_mn   = tl.program_id(0)
-        batch_id = tl.program_id(1)
+        batch_id = tl.program_id(0)
+        pid_mn   = tl.program_id(1)
         num_n    = tl.cdiv(N, BLOCK_N)
         pid_m    = pid_mn // num_n
         pid_n    = pid_mn  % num_n
@@ -559,8 +559,8 @@ if HAS_TRITON:
         BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
     ):
         # Same as fp64 but with float32/TF32
-        pid_mn   = tl.program_id(0)
-        batch_id = tl.program_id(1)
+        batch_id = tl.program_id(0)
+        pid_mn   = tl.program_id(1)
         num_n    = tl.cdiv(N, BLOCK_N)
         pid_m    = pid_mn // num_n
         pid_n    = pid_mn  % num_n
@@ -987,8 +987,8 @@ def _batched_gemm_fp64(
     alpha, beta,
     BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
 ):
-    pid_mn   = tl.program_id(0)
-    batch_id = tl.program_id(1)
+    batch_id = tl.program_id(0)
+    pid_mn   = tl.program_id(1)
     num_n    = tl.cdiv(N, BLOCK_N)
     pid_m    = pid_mn // num_n
     pid_n    = pid_mn  % num_n
@@ -1032,8 +1032,8 @@ def _batched_gemm_fp32(
     alpha, beta,
     BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
 ):
-    pid_mn   = tl.program_id(0)
-    batch_id = tl.program_id(1)
+    batch_id = tl.program_id(0)
+    pid_mn   = tl.program_id(1)
     num_n    = tl.cdiv(N, BLOCK_N)
     pid_m    = pid_mn // num_n
     pid_n    = pid_mn  % num_n
@@ -1081,7 +1081,7 @@ def run_triton_sequential(A_gpu, B_gpu, C_gpu, M, N, K, batch, dtype, beta=BETA)
     else:
         kernel = _batched_gemm_fp32
         
-    grid = lambda META: (triton.cdiv(M, META['BLOCK_M']) * triton.cdiv(N, META['BLOCK_N']), batch)
+    grid = lambda META: (batch, triton.cdiv(M, META['BLOCK_M']) * triton.cdiv(N, META['BLOCK_N']))
     kernel[grid](A_gpu, B_gpu, C_gpu, **kwargs)
     
     best_config = kernel.best_config
